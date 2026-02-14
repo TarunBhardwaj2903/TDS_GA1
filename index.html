@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>India General Knowledge Quiz</title>
+    <style>
+        :root {
+            --primary: #6366f1;
+            --primary-hover: #4f46e5;
+            --background: #f8fafc;
+            --card-bg: #ffffff;
+            --text-main: #1e293b;
+            --text-muted: #64748b;
+            --border: #e2e8f0;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--background);
+            color: var(--text-main);
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            min-height: 100vh;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 600px;
+            background: var(--card-bg);
+            padding: 2rem;
+            border-radius: 1rem;
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+        }
+
+        h1 {
+            text-align: center;
+            color: var(--primary);
+            margin-bottom: 2rem;
+            font-size: 2rem;
+            font-weight: 700;
+        }
+
+        .question-card {
+            background: #fff;
+            border: 1px solid var(--border);
+            border-radius: 0.75rem;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .question-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1);
+        }
+
+        h2 {
+            font-size: 1.25rem;
+            margin-top: 0;
+            margin-bottom: 1rem;
+            color: var(--text-main);
+        }
+
+        .options {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        label {
+            display: flex;
+            align-items: center;
+            padding: 0.75rem;
+            border: 1px solid var(--border);
+            border-radius: 0.5rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        label:hover {
+            background-color: #f1f5f9;
+            border-color: var(--primary);
+        }
+
+        input[type="radio"] {
+            margin-right: 10px;
+            accent-color: var(--primary);
+            width: 1.2em;
+            height: 1.2em;
+        }
+
+        button {
+            display: block;
+            width: 100%;
+            padding: 1rem;
+            background-color: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 0.5rem;
+            font-size: 1.1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background-color 0.2s;
+            margin-top: 2rem;
+        }
+
+        button:hover {
+            background-color: var(--primary-hover);
+        }
+
+        #result {
+            margin-top: 1.5rem;
+            text-align: center;
+            font-size: 1.25rem;
+            font-weight: bold;
+            padding: 1rem;
+            border-radius: 0.5rem;
+        }
+
+        .correct {
+            background-color: #dcfce7;
+            color: #166534;
+        }
+
+        .incorrect {
+            background-color: #fee2e2;
+            color: #991b1b;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>🇮🇳 India Quiz</h1>
+    
+    <form id="quizForm">
+        <!-- Question 1 -->
+        <div class="question-card">
+            <h2>1. What was the first satellite India launched called?</h2>
+            <div class="options">
+                <label><input type="radio" name="q1" value="Aryabhata"> Aryabhata</label>
+                <label><input type="radio" name="q1" value="Bhaskara"> Bhaskara</label>
+                <label><input type="radio" name="q1" value="Rohini"> Rohini</label>
+                <label><input type="radio" name="q1" value="INSAT"> INSAT</label>
+                <label><input type="radio" name="q1" value="Kalpana"> Kalpana</label>
+            </div>
+        </div>
+
+        <!-- Question 2 -->
+        <div class="question-card">
+            <h2>2. Who is known as the Father of the Nation in India?</h2>
+            <div class="options">
+                <label><input type="radio" name="q2" value="Nehru"> Jawaharlal Nehru</label>
+                <label><input type="radio" name="q2" value="Gandhi"> Mahatma Gandhi</label>
+                <label><input type="radio" name="q2" value="Patel"> Sardar Patel</label>
+                <label><input type="radio" name="q2" value="Subhash"> Subhash Chandra Bose</label>
+            </div>
+        </div>
+
+        <!-- Question 3 -->
+        <div class="question-card">
+            <h2>3. What is the capital of India?</h2>
+            <div class="options">
+                <label><input type="radio" name="q3" value="Mumbai"> Mumbai</label>
+                <label><input type="radio" name="q3" value="Kolkata"> Kolkata</label>
+                <label><input type="radio" name="q3" value="Chennai"> Chennai</label>
+                <label><input type="radio" name="q3" value="Delhi"> New Delhi</label>
+            </div>
+        </div>
+
+        <button type="submit">Submit Answers</button>
+    </form>
+
+    <div id="result"></div>
+</div>
+
+<script>
+    document.getElementById('quizForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+        
+        // Correct answers
+        const answers = {
+            q1: 'Aryabhata',
+            q2: 'Gandhi',
+            q3: 'Delhi'
+        };
+
+        let score = 0;
+        let total = 3;
+        const formData = new FormData(this);
+        let allAnswered = true;
+
+        for (let i = 1; i <= total; i++) {
+            if (!formData.get('q' + i)) {
+                allAnswered = false;
+                break;
+            }
+        }
+
+        if (!allAnswered) {
+            alert('Please answer all questions before submitting.');
+            return;
+        }
+
+        if (formData.get('q1') === answers.q1) score++;
+        if (formData.get('q2') === answers.q2) score++;
+        if (formData.get('q3') === answers.q3) score++;
+
+        const resultDiv = document.getElementById('result');
+        resultDiv.textContent = `You scored ${score} out of ${total}!`;
+        
+        if (score === total) {
+            resultDiv.className = 'correct';
+            resultDiv.textContent += ' 🎉 Excellent Work!';
+        } else {
+            resultDiv.className = score > 0 ? 'correct' : 'incorrect';
+            resultDiv.textContent += score > 1 ? ' Good Try!' : ' Keep Learning!';
+        }
+    });
+</script>
+
+</body>
+</html>
