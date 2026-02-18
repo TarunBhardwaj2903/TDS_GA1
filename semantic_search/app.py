@@ -1,9 +1,12 @@
 """
-Semantic Search with Re-ranking API (Gemini Version)
-=====================================================
+Semantic Search with Re-ranking API
+====================================
 Two-stage search pipeline:
   Stage 1: Embed query → cosine similarity against 63 doc embeddings → top K candidates
   Stage 2: LLM re-ranks candidates using Gemini → return top rerankK results
+
+Embeddings: OpenAI text-embedding-3-small
+Re-ranking:  Gemini 2.0 Flash
 
 Run:  uvicorn app:app --host 0.0.0.0 --port 8000
 """
@@ -14,26 +17,35 @@ import time
 import numpy as np
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import google.generativeai as genai
+from openai import OpenAI
 from dotenv import load_dotenv
 
 # ── Load environment variables ──────────────────────────────────────────────
 load_dotenv()
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+
 if not GEMINI_API_KEY:
-    print("⚠️  WARNING: GEMINI_API_KEY not set. Get one free at https://aistudio.google.com/app/apikey")
+    print("⚠️  WARNING: GEMINI_API_KEY not set.")
+if not OPENAI_API_KEY:
+    print("⚠️  WARNING: OPENAI_API_KEY not set.")
 
 genai.configure(api_key=GEMINI_API_KEY)
+openai_client = OpenAI(api_key=OPENAI_API_KEY)
+
+EMBEDDING_MODEL = "text-embedding-3-small"   # OpenAI — works reliably
+RERANK_MODEL    = "gemini-2.0-flash"         # Gemini — for LLM re-ranking
 
 # ── FastAPI app ─────────────────────────────────────────────────────────────
 app = FastAPI(
     title="Semantic Search with Re-ranking",
-    description="Two-stage search: vector retrieval + LLM re-ranking (Gemini)",
-    version="1.0.0",
+    description="Two-stage search: OpenAI vector retrieval + Gemini LLM re-ranking",
+    version="2.0.0",
 )
 
 app.add_middleware(
@@ -111,25 +123,31 @@ DOCUMENTS = [
 ]
 
 # ── Embedding cache ─────────────────────────────────────────────────────────
-EMBEDDING_MODEL = "models/text-embedding-004"
 EMBEDDINGS_CACHE_FILE = Path(__file__).parent / "embeddings_cache.json"
 doc_embeddings: list[list[float]] = []
 
 
-def compute_embedding(text: str) -> list[float]:
-    """Get embedding for a single text using Gemini API."""
-    result = genai.embed_content(model=EMBEDDING_MODEL, content=text)
-    return result["embedding"]
+def compute_embedding_openai(text: str) -> list[float]:
+    """Get embedding for a single text using OpenAI API."""
+    response = openai_client.embeddings.create(
+        model=EMBEDDING_MODEL,
+        input=text,
+    )
+    return response.data[0].embedding
 
 
-def compute_embeddings_batch(texts: list[str]) -> list[list[float]]:
-    """Get embeddings for multiple texts using Gemini API."""
-    result = genai.embed_content(model=EMBEDDING_MODEL, content=texts)
-    return result["embedding"]
+def compute_embeddings_batch_openai(texts: list[str]) -> list[list[float]]:
+    """Get embeddings for multiple texts in one OpenAI API call (max 2048 inputs)."""
+    response = openai_client.embeddings.create(
+        model=EMBEDDING_MODEL,
+        input=texts,
+    )
+    # Results are returned in the same order as input
+    return [item.embedding for item in sorted(response.data, key=lambda x: x.index)]
 
 
 def load_or_compute_embeddings() -> list[list[float]]:
-    """Load cached embeddings or compute + cache them."""
+    """Load cached embeddings or compute + cache them via OpenAI."""
     if EMBEDDINGS_CACHE_FILE.exists():
         try:
             with open(EMBEDDINGS_CACHE_FILE, "r") as f:
@@ -140,22 +158,22 @@ def load_or_compute_embeddings() -> list[list[float]]:
         except Exception:
             pass
 
-    print(f"🔄 Computing embeddings for {len(DOCUMENTS)} documents...")
+    print(f"🔄 Computing embeddings for {len(DOCUMENTS)} documents via OpenAI...")
     texts = [doc["content"] for doc in DOCUMENTS]
 
-    # Batch in groups of 20
+    # Batch in groups of 100 (well within OpenAI limits)
     all_embeddings = []
-    batch_size = 20
+    batch_size = 100
     for i in range(0, len(texts), batch_size):
-        batch = texts[i : i + batch_size]
-        embs = compute_embeddings_batch(batch)
+        batch = texts[i: i + batch_size]
+        embs = compute_embeddings_batch_openai(batch)
         all_embeddings.extend(embs)
         print(f"   Embedded {min(i + batch_size, len(texts))}/{len(texts)} docs")
 
     # Cache to disk
     with open(EMBEDDINGS_CACHE_FILE, "w") as f:
         json.dump(all_embeddings, f)
-    print(f"✅ Cached {len(all_embeddings)} embeddings")
+    print(f"✅ Cached {len(all_embeddings)} embeddings to disk")
 
     return all_embeddings
 
@@ -163,8 +181,8 @@ def load_or_compute_embeddings() -> list[list[float]]:
 # ── Cosine similarity ──────────────────────────────────────────────────────
 def cosine_similarity(a: list[float], b: list[float]) -> float:
     """Compute cosine similarity between two vectors."""
-    a_np = np.array(a)
-    b_np = np.array(b)
+    a_np = np.array(a, dtype=np.float32)
+    b_np = np.array(b, dtype=np.float32)
     dot = np.dot(a_np, b_np)
     norm_a = np.linalg.norm(a_np)
     norm_b = np.linalg.norm(b_np)
@@ -184,9 +202,11 @@ def vector_search(query_embedding: list[float], top_k: int = 5) -> list[dict]:
 
     results = []
     for idx, sim in scores[:top_k]:
+        # Normalize cosine similarity from [-1,1] to [0,1]
+        normalized_score = round((sim + 1) / 2, 4)
         results.append({
             "id": DOCUMENTS[idx]["id"],
-            "score": round(sim, 4),
+            "score": normalized_score,
             "content": DOCUMENTS[idx]["content"],
             "metadata": DOCUMENTS[idx]["metadata"],
         })
@@ -196,7 +216,7 @@ def vector_search(query_embedding: list[float], top_k: int = 5) -> list[dict]:
 # ── LLM Re-ranking with Gemini ─────────────────────────────────────────────
 def rerank_with_llm(query: str, candidates: list[dict], top_k: int = 3) -> list[dict]:
     """Re-rank candidates using Gemini to score query-document relevance."""
-    model = genai.GenerativeModel("gemini-2.0-flash")
+    model = genai.GenerativeModel(RERANK_MODEL)
     reranked = []
 
     for candidate in candidates:
@@ -216,8 +236,8 @@ def rerank_with_llm(query: str, candidates: list[dict], top_k: int = 3) -> list[
                 ),
             )
             score_text = response.text.strip()
-            score_raw = float(score_text.split()[0].replace(",", ""))
-            score_raw = max(0, min(10, score_raw))
+            score_raw = float(score_text.split()[0].replace(",", "").replace(".", "."))
+            score_raw = max(0.0, min(10.0, score_raw))
             score_normalized = round(score_raw / 10.0, 4)
         except Exception as e:
             print(f"⚠️  Re-ranking error for doc {candidate['id']}: {e}")
@@ -263,7 +283,7 @@ class SearchResponse(BaseModel):
 # ── API Endpoints ───────────────────────────────────────────────────────────
 @app.on_event("startup")
 async def startup():
-    """Try to load embeddings on start, but don't crash if it fails."""
+    """Load/compute embeddings on startup."""
     global doc_embeddings
     try:
         doc_embeddings = load_or_compute_embeddings()
@@ -279,6 +299,8 @@ async def root():
         "message": "Semantic Search with Re-ranking API",
         "usage": "POST /search with { query, k, rerank, rerankK }",
         "docs": "/docs",
+        "embedding_model": EMBEDDING_MODEL,
+        "rerank_model": RERANK_MODEL,
     }
 
 
@@ -288,6 +310,7 @@ async def health():
         "status": "healthy",
         "documents": len(DOCUMENTS),
         "embeddings_loaded": len(doc_embeddings) > 0,
+        "embedding_model": EMBEDDING_MODEL,
     }
 
 
@@ -296,8 +319,8 @@ async def health():
 async def search(request: SearchRequest):
     """
     Two-stage semantic search:
-    1. Embed query → cosine similarity → top K candidates
-    2. (Optional) Re-rank with LLM → top rerankK results
+    1. Embed query via OpenAI → cosine similarity → top K candidates
+    2. (Optional) Re-rank with Gemini LLM → top rerankK results
     """
     start_time = time.time()
 
@@ -312,9 +335,22 @@ async def search(request: SearchRequest):
         except Exception as e:
             raise HTTPException(status_code=503, detail=f"Failed to compute embeddings: {e}")
 
-    # Stage 1: Vector Search
-    query_embedding = compute_embedding(request.query)
+    # Stage 1: Embed query + Vector Search
+    try:
+        query_embedding = compute_embedding_openai(request.query)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Failed to embed query: {e}")
+
     candidates = vector_search(query_embedding, top_k=request.k)
+
+    # Handle edge case: no results
+    if not candidates:
+        elapsed_ms = int((time.time() - start_time) * 1000)
+        return SearchResponse(
+            results=[],
+            reranked=False,
+            metrics=MetricsModel(latency=elapsed_ms, totalDocs=len(DOCUMENTS)),
+        )
 
     # Stage 2: Re-ranking (optional)
     did_rerank = False
@@ -323,9 +359,6 @@ async def search(request: SearchRequest):
         did_rerank = True
     else:
         results = candidates[: request.rerankK]
-
-    if not results:
-        results = []
 
     elapsed_ms = int((time.time() - start_time) * 1000)
 
