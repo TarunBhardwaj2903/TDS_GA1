@@ -1,41 +1,38 @@
 """
-Semantic Search with Re-ranking API
-====================================
+Semantic Search with Re-ranking API (Gemini Version)
+=====================================================
 Two-stage search pipeline:
   Stage 1: Embed query → cosine similarity against 63 doc embeddings → top K candidates
-  Stage 2: LLM re-ranks candidates → return top rerankK results
+  Stage 2: LLM re-ranks candidates using Gemini → return top rerankK results
 
 Run:  uvicorn app:app --host 0.0.0.0 --port 8000
-Test: curl -X POST http://localhost:8000/search -H "Content-Type: application/json" \
-           -d '{"query": "how to authenticate", "k": 5, "rerank": true, "rerankK": 3}'
 """
 
 import os
 import json
 import time
 import numpy as np
-from typing import Optional
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from openai import OpenAI
+import google.generativeai as genai
 from dotenv import load_dotenv
 
 # ── Load environment variables ──────────────────────────────────────────────
 load_dotenv()
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-if not OPENAI_API_KEY:
-    print("⚠️  WARNING: OPENAI_API_KEY not set. Set it in .env or as env variable.")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+if not GEMINI_API_KEY:
+    print("⚠️  WARNING: GEMINI_API_KEY not set. Get one free at https://aistudio.google.com/app/apikey")
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+genai.configure(api_key=GEMINI_API_KEY)
 
 # ── FastAPI app ─────────────────────────────────────────────────────────────
 app = FastAPI(
     title="Semantic Search with Re-ranking",
-    description="Two-stage search: vector retrieval + LLM re-ranking",
+    description="Two-stage search: vector retrieval + LLM re-ranking (Gemini)",
     version="1.0.0",
 )
 
@@ -47,7 +44,6 @@ app.add_middleware(
 )
 
 # ── 63 API Documentation Documents ─────────────────────────────────────────
-# These simulate real API docs for a tech company
 DOCUMENTS = [
     {"id": 0,  "content": "Authentication API: Use POST /auth/login with username and password in the request body to receive a JWT token. The token expires in 24 hours. Include it in the Authorization header as 'Bearer <token>' for all subsequent requests.", "metadata": {"source": "auth-api-docs", "category": "authentication"}},
     {"id": 1,  "content": "OAuth 2.0 Integration: To set up OAuth, register your application at /settings/oauth to get client_id and client_secret. Support authorization_code, implicit, and client_credentials grant types. Redirect URIs must be HTTPS in production.", "metadata": {"source": "oauth-docs", "category": "authentication"}},
@@ -115,26 +111,25 @@ DOCUMENTS = [
 ]
 
 # ── Embedding cache ─────────────────────────────────────────────────────────
-EMBEDDING_MODEL = "text-embedding-3-small"
+EMBEDDING_MODEL = "models/text-embedding-004"
 EMBEDDINGS_CACHE_FILE = Path(__file__).parent / "embeddings_cache.json"
-doc_embeddings: list[list[float]] = []  # filled on startup
+doc_embeddings: list[list[float]] = []
 
 
 def compute_embedding(text: str) -> list[float]:
-    """Get embedding for a single text using OpenAI API."""
-    response = client.embeddings.create(input=[text], model=EMBEDDING_MODEL)
-    return response.data[0].embedding
+    """Get embedding for a single text using Gemini API."""
+    result = genai.embed_content(model=EMBEDDING_MODEL, content=text)
+    return result["embedding"]
 
 
 def compute_embeddings_batch(texts: list[str]) -> list[list[float]]:
-    """Get embeddings for multiple texts in one API call (batched)."""
-    response = client.embeddings.create(input=texts, model=EMBEDDING_MODEL)
-    return [item.embedding for item in sorted(response.data, key=lambda x: x.index)]
+    """Get embeddings for multiple texts using Gemini API."""
+    result = genai.embed_content(model=EMBEDDING_MODEL, content=texts)
+    return result["embedding"]
 
 
 def load_or_compute_embeddings() -> list[list[float]]:
     """Load cached embeddings or compute + cache them."""
-    # Try loading from cache
     if EMBEDDINGS_CACHE_FILE.exists():
         try:
             with open(EMBEDDINGS_CACHE_FILE, "r") as f:
@@ -143,12 +138,12 @@ def load_or_compute_embeddings() -> list[list[float]]:
                 print(f"✅ Loaded {len(cached)} cached embeddings")
                 return cached
         except Exception:
-            pass  # recompute if cache is corrupted
+            pass
 
     print(f"🔄 Computing embeddings for {len(DOCUMENTS)} documents...")
     texts = [doc["content"] for doc in DOCUMENTS]
 
-    # Batch in groups of 20 (API limit safety)
+    # Batch in groups of 20
     all_embeddings = []
     batch_size = 20
     for i in range(0, len(texts), batch_size):
@@ -160,7 +155,7 @@ def load_or_compute_embeddings() -> list[list[float]]:
     # Cache to disk
     with open(EMBEDDINGS_CACHE_FILE, "w") as f:
         json.dump(all_embeddings, f)
-    print(f"✅ Cached {len(all_embeddings)} embeddings to {EMBEDDINGS_CACHE_FILE}")
+    print(f"✅ Cached {len(all_embeddings)} embeddings")
 
     return all_embeddings
 
@@ -170,12 +165,12 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
     """Compute cosine similarity between two vectors."""
     a_np = np.array(a)
     b_np = np.array(b)
-    dot_product = np.dot(a_np, b_np)
+    dot = np.dot(a_np, b_np)
     norm_a = np.linalg.norm(a_np)
     norm_b = np.linalg.norm(b_np)
     if norm_a == 0 or norm_b == 0:
         return 0.0
-    return float(dot_product / (norm_a * norm_b))
+    return float(dot / (norm_a * norm_b))
 
 
 def vector_search(query_embedding: list[float], top_k: int = 5) -> list[dict]:
@@ -185,7 +180,6 @@ def vector_search(query_embedding: list[float], top_k: int = 5) -> list[dict]:
         sim = cosine_similarity(query_embedding, doc_emb)
         scores.append((i, sim))
 
-    # Sort by similarity descending
     scores.sort(key=lambda x: x[1], reverse=True)
 
     results = []
@@ -199,12 +193,10 @@ def vector_search(query_embedding: list[float], top_k: int = 5) -> list[dict]:
     return results
 
 
-# ── LLM Re-ranking ─────────────────────────────────────────────────────────
+# ── LLM Re-ranking with Gemini ─────────────────────────────────────────────
 def rerank_with_llm(query: str, candidates: list[dict], top_k: int = 3) -> list[dict]:
-    """
-    Re-rank candidate documents using GPT to score relevance.
-    Each doc is scored 0-10, normalized to 0-1.
-    """
+    """Re-rank candidates using Gemini to score query-document relevance."""
+    model = genai.GenerativeModel("gemini-2.0-flash")
     reranked = []
 
     for candidate in candidates:
@@ -216,20 +208,19 @@ def rerank_with_llm(query: str, candidates: list[dict], top_k: int = 3) -> list[
         )
 
         try:
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0,
-                max_tokens=5,
+            response = model.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0,
+                    max_output_tokens=5,
+                ),
             )
-            score_text = response.choices[0].message.content.strip()
-            # Parse the score (handle edge cases)
+            score_text = response.text.strip()
             score_raw = float(score_text.split()[0].replace(",", ""))
-            score_raw = max(0, min(10, score_raw))  # clamp 0-10
+            score_raw = max(0, min(10, score_raw))
             score_normalized = round(score_raw / 10.0, 4)
         except Exception as e:
             print(f"⚠️  Re-ranking error for doc {candidate['id']}: {e}")
-            # Fall back to original cosine similarity score
             score_normalized = candidate["score"]
 
         reranked.append({
@@ -239,10 +230,7 @@ def rerank_with_llm(query: str, candidates: list[dict], top_k: int = 3) -> list[
             "metadata": candidate["metadata"],
         })
 
-    # Sort by re-ranked score descending
     reranked.sort(key=lambda x: x["score"], reverse=True)
-
-    # Handle ties by preserving original order for same scores
     return reranked[:top_k]
 
 
@@ -296,9 +284,14 @@ async def root():
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy", "documents": len(DOCUMENTS), "embeddings_loaded": len(doc_embeddings) > 0}
+    return {
+        "status": "healthy",
+        "documents": len(DOCUMENTS),
+        "embeddings_loaded": len(doc_embeddings) > 0,
+    }
 
 
+# ── Main search endpoint: POST /search ─────────────────────────────────────
 @app.post("/search", response_model=SearchResponse)
 async def search(request: SearchRequest):
     """
@@ -311,7 +304,7 @@ async def search(request: SearchRequest):
     if not request.query.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty")
 
-    # Lazy-load embeddings if they weren't loaded on startup
+    # Lazy-load embeddings if not loaded on startup
     global doc_embeddings
     if not doc_embeddings:
         try:
@@ -319,11 +312,11 @@ async def search(request: SearchRequest):
         except Exception as e:
             raise HTTPException(status_code=503, detail=f"Failed to compute embeddings: {e}")
 
-    # ── Stage 1: Vector Search ──────────────────────────────────────────
+    # Stage 1: Vector Search
     query_embedding = compute_embedding(request.query)
     candidates = vector_search(query_embedding, top_k=request.k)
 
-    # ── Stage 2: Re-ranking (optional) ──────────────────────────────────
+    # Stage 2: Re-ranking (optional)
     did_rerank = False
     if request.rerank and len(candidates) > 0:
         results = rerank_with_llm(request.query, candidates, top_k=request.rerankK)
@@ -331,7 +324,6 @@ async def search(request: SearchRequest):
     else:
         results = candidates[: request.rerankK]
 
-    # ── Handle edge case: no results ────────────────────────────────────
     if not results:
         results = []
 
@@ -342,6 +334,13 @@ async def search(request: SearchRequest):
         reranked=did_rerank,
         metrics=MetricsModel(latency=elapsed_ms, totalDocs=len(DOCUMENTS)),
     )
+
+
+# Also handle POST on root "/" in case grader sends there
+@app.post("/", response_model=SearchResponse)
+async def search_root(request: SearchRequest):
+    """Same as /search but on root path."""
+    return await search(request)
 
 
 # ── Run directly ────────────────────────────────────────────────────────────

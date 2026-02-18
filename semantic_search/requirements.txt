@@ -1,6 +1,6 @@
 fastapi
 uvicorn
 numpy
-openai
+google-generativeai
 httpx
 python-dotenv
