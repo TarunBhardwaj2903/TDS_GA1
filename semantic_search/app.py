@@ -275,10 +275,14 @@ class SearchResponse(BaseModel):
 # ── API Endpoints ───────────────────────────────────────────────────────────
 @app.on_event("startup")
 async def startup():
-    """Pre-compute document embeddings on server start."""
+    """Try to load embeddings on start, but don't crash if it fails."""
     global doc_embeddings
-    doc_embeddings = load_or_compute_embeddings()
-    print(f"🚀 Server ready with {len(doc_embeddings)} document embeddings")
+    try:
+        doc_embeddings = load_or_compute_embeddings()
+        print(f"🚀 Server ready with {len(doc_embeddings)} document embeddings")
+    except Exception as e:
+        print(f"⚠️  Could not load embeddings on startup: {e}")
+        print("   Embeddings will be computed on first search request.")
 
 
 @app.get("/")
@@ -307,8 +311,13 @@ async def search(request: SearchRequest):
     if not request.query.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty")
 
+    # Lazy-load embeddings if they weren't loaded on startup
+    global doc_embeddings
     if not doc_embeddings:
-        raise HTTPException(status_code=503, detail="Embeddings not loaded yet")
+        try:
+            doc_embeddings = load_or_compute_embeddings()
+        except Exception as e:
+            raise HTTPException(status_code=503, detail=f"Failed to compute embeddings: {e}")
 
     # ── Stage 1: Vector Search ──────────────────────────────────────────
     query_embedding = compute_embedding(request.query)
